@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quant-risk-platform
+  labels:
+    app: quant-risk
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: quant-risk
+  template:
+    metadata:
+      labels:
+        app: quant-risk
+    spec:
+      containers:
+      - name: api-engine
+        image: quant-risk-platform:latest
+        ports:
+        - containerPort: 8000
+        resources:
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
