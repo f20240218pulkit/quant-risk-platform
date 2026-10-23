@@ -145,7 +145,7 @@ with st.sidebar:
     horizon = st.slider("Simulation horizon · trading days", 1, 60, 10)
     paths = min(10000, 120000 // (horizon + 1))
     weights = []
-    with st.expander("Allocation weights", expanded=True):
+    with st.expander("Allocation weights", expanded=False):
         if valid:
             for ticker in tickers:
                 weights.append(st.number_input(f"{ticker} · %", min_value=0.0, max_value=100.0, value=round(100 / len(tickers), 2), key=f"weight_{ticker}") / 100)
