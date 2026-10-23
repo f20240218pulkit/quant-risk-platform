@@ -1,119 +1,66 @@
-import plotly.graph_objects as go
-import plotly.express as px
-import pandas as pd
+"""Consistent chart styling for the portfolio analytics workspace."""
 import numpy as np
-from typing import List, Dict, Any
+import plotly.graph_objects as go
 
-def plot_monte_carlo_fan_chart(trajectories: List[List[float]], initial_value: float) -> go.Figure:
-    """Renders 10,000 Monte Carlo price paths with quantile bands."""
-    matrix = np.array(trajectories)
-    days = matrix.shape[1] - 1
-    
-    p10 = np.percentile(matrix, 10, axis=0)
-    p50 = np.percentile(matrix, 50, axis=0)
-    p90 = np.percentile(matrix, 90, axis=0)
-    
+GOLD = "#d6b777"
+TEAL = "#70cbb5"
+ROSE = "#e69b9b"
+MUTED = "#8c9bb0"
+
+
+def _style(fig, height=420):
+    fig.update_layout(
+        template="plotly_dark", paper_bgcolor="#111a26", plot_bgcolor="#111a26",
+        font=dict(family="Inter, Arial, sans-serif", color=MUTED, size=12),
+        height=height, margin=dict(l=25, r=25, t=58, b=35),
+        hovermode="x unified", hoverlabel=dict(bgcolor="#1b283a", font_color="#edf2f7"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.05, x=0, font_size=11),
+    )
+    fig.update_xaxes(gridcolor="#1e2a3a", zeroline=False, showline=False, title_font_size=11, automargin=True)
+    fig.update_yaxes(gridcolor="#263245", zeroline=False, showline=False, title_font_size=11, automargin=True)
+    return fig
+
+
+def plot_monte_carlo_fan_chart(trajectories, initial_value):
+    matrix = np.asarray(trajectories, dtype=float)
+    p10, p50, p90 = np.percentile(matrix, [10, 50, 90], axis=0)
     fig = go.Figure()
-    
-    for i in range(min(50, matrix.shape[0])):
-        fig.add_trace(go.Scatter(
-            y=matrix[i],
-            mode='lines',
-            line=dict(color='rgba(100, 100, 255, 0.05)', width=1),
-            showlegend=False,
-            hoverinfo='skip'
-        ))
-        
-    fig.add_trace(go.Scatter(
-        y=p50, mode='lines', name='Median Path (50th %ile)',
-        line=dict(color='#00F0FF', width=3)
-    ))
-    fig.add_trace(go.Scatter(
-        y=p90, mode='lines', name='Bull Case (90th %ile)',
-        line=dict(color='#00FF87', width=2, dash='dash')
-    ))
-    fig.add_trace(go.Scatter(
-        y=p10, mode='lines', name='Bear Case (10th %ile)',
-        line=dict(color='#FF2E93', width=2, dash='dash')
-    ))
-    
-    fig.update_layout(
-        title=f"Stochastic Price Forecast ({days}-Day Horizon)",
-        xaxis_title="Trading Days",
-        yaxis_title="Portfolio Value ($)",
-        template="plotly_dark",
-        margin=dict(l=20, r=20, t=50, b=20),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-    )
-    return fig
+    fig.add_trace(go.Scatter(y=p90, mode="lines", line=dict(width=0), name="90th percentile", hovertemplate="$%{y:,.0f}<extra>90th percentile</extra>"))
+    fig.add_trace(go.Scatter(y=p10, mode="lines", line=dict(width=0), fill="tonexty", fillcolor="rgba(112,203,181,0.12)", name="10th–90th percentile", hovertemplate="$%{y:,.0f}<extra>10th percentile</extra>"))
+    for path in matrix[:20]:
+        fig.add_trace(go.Scatter(y=path, mode="lines", line=dict(color="rgba(140,155,176,0.13)", width=1), showlegend=False, hoverinfo="skip"))
+    fig.add_trace(go.Scatter(y=p50, mode="lines", name="Median outcome", line=dict(color=GOLD, width=2.5), hovertemplate="$%{y:,.0f}<extra>Median</extra>"))
+    fig.add_hline(y=initial_value, line_color="#59677b", line_dash="dot", line_width=1)
+    fig.update_layout(xaxis_title="Trading days", yaxis_title="Portfolio value · USD")
+    fig.update_yaxes(tickprefix="$", tickformat=",.0f")
+    return _style(fig)
 
-def plot_efficient_frontier(
-    frontier_points: List[Dict[str, float]], 
-    max_sharpe: Dict[str, Any], 
-    min_var: Dict[str, Any]
-) -> go.Figure:
-    """Renders Markowitz Efficient Frontier curve with optimal allocation markers."""
-    df_frontier = pd.DataFrame(frontier_points)
-    
+
+def plot_efficient_frontier(frontier_points, max_sharpe, min_var):
     fig = go.Figure()
-    
-    fig.add_trace(go.Scatter(
-        x=df_frontier['volatility'] * 100,
-        y=df_frontier['return'] * 100,
-        mode='lines',
-        name='Efficient Frontier',
-        line=dict(color='#00F0FF', width=3)
-    ))
-    fig.add_trace(go.Scatter(
-        x=[max_sharpe['volatility'] * 100],
-        y=[max_sharpe['return'] * 100],
-        mode='markers',
-        name='Max Sharpe Ratio',
-        marker=dict(color='#00FF87', size=14, symbol='star')
-    ))
-    fig.add_trace(go.Scatter(
-        x=[min_var['volatility'] * 100],
-        y=[min_var['return'] * 100],
-        mode='markers',
-        name='Global Min Variance',
-        marker=dict(color='#FFD700', size=12, symbol='diamond')
-    ))
-    
-    fig.update_layout(
-        title="Markowitz Efficient Frontier Curve",
-        xaxis_title="Annualized Risk / Volatility (%)",
-        yaxis_title="Annualized Expected Return (%)",
-        template="plotly_dark",
-        margin=dict(l=20, r=20, t=50, b=20)
-    )
-    return fig
+    if frontier_points:
+        fig.add_trace(go.Scatter(x=[p["volatility"]*100 for p in frontier_points], y=[p["return"]*100 for p in frontier_points], mode="lines", name="Efficient frontier", line=dict(color=GOLD, width=2.5), hovertemplate="Risk %{x:.2f}% · Return %{y:.2f}%<extra>Efficient frontier</extra>"))
+    for portfolio, name, color, symbol in [(max_sharpe, "Maximum Sharpe", TEAL, "diamond"), (min_var, "Minimum variance", "#9aabe0", "circle")]:
+        fig.add_trace(go.Scatter(x=[portfolio["volatility"]*100], y=[portfolio["return"]*100], mode="markers", name=name, marker=dict(color=color, size=13, symbol=symbol, line=dict(color="#111a26", width=2)), hovertemplate="Risk %{x:.2f}% · Return %{y:.2f}%<extra>"+name+"</extra>"))
+    fig.update_layout(xaxis_title="Annualised volatility", yaxis_title="Annualised expected return")
+    fig.update_xaxes(ticksuffix="%")
+    fig.update_yaxes(ticksuffix="%")
+    return _style(fig)
 
-def plot_stress_test_drawdowns(stress_data: Dict[str, Dict[str, Any]]) -> go.Figure:
-    """Renders historical crisis drawdown bar comparisons."""
-    scenarios = []
-    drawdowns = []
-    dollar_losses = []
-    
-    for key, info in stress_data.items():
-        scenarios.append(info["scenario_name"])
-        drawdowns.append(abs(info["max_drawdown_pct"]) * 100)
-        dollar_losses.append(info["dollar_loss"])
-        
-    fig = go.Figure(data=[
-        go.Bar(
-            x=scenarios,
-            y=drawdowns,
-            text=[f"-{dd:.1f}% (-${dl:,.0f})" for dd, dl in zip(drawdowns, dollar_losses)],
-            textposition='auto',
-            marker_color='#FF2E93'
-        )
-    ])
-    
-    fig.update_layout(
-        title="Historical Macro Shock Drawdown Analysis",
-        xaxis_title="Crisis Scenario",
-        yaxis_title="Peak-to-Trough Drawdown (%)",
-        template="plotly_dark",
-        margin=dict(l=20, r=20, t=50, b=20)
-    )
-    return fig
+
+def plot_stress_test_drawdowns(stress_data):
+    items = list(stress_data.values())
+    short_names = {"2008 Great Financial Crisis": "2008 / Financial crisis", "2020 COVID-19 Liquidity Shock": "2020 / COVID shock", "2022 Tech & Rate Hike Sell-Off": "2022 / Rate-hike sell-off"}
+    fig = go.Figure(go.Bar(
+        y=[short_names.get(item["scenario_name"], item["scenario_name"]) for item in items],
+        x=[abs(item["max_drawdown_pct"])*100 for item in items], orientation="h",
+        marker=dict(color=["#d6b777", "#9aabe0", "#70cbb5"][:len(items)], cornerradius=5),
+        text=[f"{abs(item['max_drawdown_pct']):.1%}" for item in items], textposition="outside", textfont=dict(color="#edf2f7", size=13),
+        customdata=[item["dollar_loss"] for item in items],
+        hovertemplate="%{y}<br>Drawdown %{x:.1f}%<br>Loss equivalent $%{customdata:,.0f}<extra></extra>",
+    ))
+    max_dd = max((abs(item["max_drawdown_pct"])*100 for item in items), default=0)
+    fig.update_layout(xaxis_title="Peak-to-trough drawdown", showlegend=False, bargap=.6)
+    fig.update_xaxes(range=[0, max(max_dd*1.25, 1)], ticksuffix="%")
+    fig.update_yaxes(autorange="reversed", showgrid=False)
+    return _style(fig, height=350)
