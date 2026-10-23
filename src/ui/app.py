@@ -54,6 +54,19 @@ st.set_page_config(
     layout="wide"
 )
 
+# Hide Community Cloud's repository and Fork actions in the app toolbar.
+# Keep the header and sidebar controls available, including on mobile.
+st.markdown(
+    """
+    <style>
+    [data-testid="stToolbarActionButton"] {
+        display: none !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 st.title("📈 Quantitative Risk & Portfolio Intelligence Platform")
 st.markdown("*Portfolio risk analysis, correlated simulations, and Modern Portfolio Theory optimization.*")
 
