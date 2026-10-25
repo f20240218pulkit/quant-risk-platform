@@ -1,148 +1,108 @@
-import sys
-from pathlib import Path
+"""Portfolio analytics API. Network/CPU handlers run in FastAPI's thread pool."""
+import logging
 
-# Add project root directory to sys.path for clean core imports
-root_dir = Path(__file__).resolve().parent.parent.parent
-if str(root_dir) not in sys.path:
-    sys.path.append(str(root_dir))
-
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-import numpy as np
 
-# Core Math Imports
+from src.api.schemas import (RiskAnalysisRequest, MonteCarloRequest,
+    OptimizationRequest, StressTestRequest, ValuationRequest)
 from src.core.data_loader import fetch_portfolio_data
+from src.core.validation import DataQualityError, allocation, validate_returns
 from src.core.var_engine import run_risk_suite
-from src.core.monte_carlo import run_monte_carlo_simulation
+from src.core.monte_carlo import run_monte_carlo_simulation, compact_simulation
 from src.core.optimization import optimize_portfolio, generate_efficient_frontier
 from src.core.stress_testing import run_stress_test
+from src.domain.portfolio import value_holdings
 
-# Schema Imports
-from src.api.schemas import (
-    RiskAnalysisRequest,
-    MonteCarloRequest,
-    OptimizationRequest,
-    StressTestRequest
-)
+logger = logging.getLogger(__name__)
+app = FastAPI(title="Quantitative Risk & Portfolio Intelligence API", version="1.1.0",
+    description="Portfolio risk analytics with explicit cash, data-quality checks and model assumptions.")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False,
+    allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
 
-# Initialize FastAPI App
-app = FastAPI(
-    title="Quantitative Risk & Portfolio Intelligence API",
-    description="Institutional-grade REST microservice for multi-asset risk analytics, stochastic simulations, and portfolio optimization.",
-    version="1.0.0"
-)
 
-# Enable CORS (Cross-Origin Resource Sharing)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+def history(payload):
+    prices, returns = fetch_portfolio_data(payload.tickers, start_date=payload.start_date.isoformat())
+    # Defensive labelled join even if a provider adapter returns reordered data.
+    missing = set(payload.tickers) - set(returns.columns)
+    if missing:
+        raise DataQualityError("Requested asset history is missing.")
+    returns = returns.loc[:, payload.tickers]
+    validate_returns(returns, min_observations=252)
+    metadata = {
+        "tickers": payload.tickers, "observations": len(returns),
+        "observation_start": str(returns.index[0].date()),
+        "observation_end": str(returns.index[-1].date()),
+        "requested_start": payload.start_date.isoformat(),
+        "price_policy": "provider_adjusted_close_no_filling",
+        "cash_weight": payload.cash_weight,
+        "cash_return_assumption": "zero_nominal_return",
+        "engine_version": "1.1.0",
+        "interpretation": "hypothetical_current_exposure_analysis_not_realised_account_performance",
+    }
+    return returns, metadata
+
+
+def guarded(operation):
+    try:
+        return operation()
+    except (DataQualityError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("Analytics operation failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="Market data or analytics processing is temporarily unavailable.") from exc
+
 
 @app.get("/", tags=["Health Check"])
-async def root():
-    return {
-        "status": "online",
-        "service": "Quant Risk Platform Microservice",
-        "version": "1.0.0"
-    }
+def root():
+    return {"status": "online", "service": "Quant Risk Platform", "version": "1.1.0"}
+
 
 @app.post("/api/v1/risk", tags=["Risk Analytics"])
-async def calculate_portfolio_risk(payload: RiskAnalysisRequest):
-    """
-    Computes Parametric VaR, Historical VaR, and Conditional VaR (Expected Shortfall).
-    """
-    try:
-        _, returns_df = fetch_portfolio_data(payload.tickers, start_date=payload.start_date)
-        
-        # Calculate daily weighted portfolio return series
-        normalized_weights = np.array(payload.weights) / np.sum(payload.weights)
-        portfolio_daily_returns = returns_df.dot(normalized_weights)
-        
-        # Compute risk metrics across all 3 methodologies
-        results = run_risk_suite(
-            returns=portfolio_daily_returns,
-            portfolio_value=payload.portfolio_value,
-            confidence_level=payload.confidence_level
-        )
-        return {"status": "success", "data": results}
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to calculate risk suite: {str(e)}"
-        )
+def calculate_portfolio_risk(payload: RiskAnalysisRequest):
+    def run():
+        returns, metadata = history(payload)
+        weights = allocation(payload.weights, len(payload.tickers), payload.cash_weight)
+        results = run_risk_suite(returns.dot(weights), payload.portfolio_value, payload.confidence_level)
+        metadata.update({"rebalancing": "constant_current_exposures_on_historical_daily_returns",
+            "horizon_trading_days": 1, "confidence_level": payload.confidence_level,
+            "quantile_method": "linear", "tail_selection": "observations_at_or_below_return_quantile"})
+        return {"status": "success", "data": results, "metadata": metadata}
+    return guarded(run)
+
 
 @app.post("/api/v1/monte-carlo", tags=["Stochastic Simulations"])
-async def simulate_monte_carlo(payload: MonteCarloRequest):
-    """
-    Runs 10,000+ Geometric Brownian Motion trajectories using Cholesky Decomposition.
-    """
-    try:
-        _, returns_df = fetch_portfolio_data(payload.tickers, start_date=payload.start_date)
-        
-        sim_results = run_monte_carlo_simulation(
-            returns=returns_df,
-            weights=payload.weights,
-            portfolio_value=payload.portfolio_value,
-            days=payload.days,
-            n_simulations=payload.n_simulations,
-            confidence_level=payload.confidence_level
-        )
-        
-        # Convert NumPy trajectories matrix to nested Python list for JSON response
-        sim_results["trajectories"] = sim_results["trajectories"].tolist()
-        
-        return {"status": "success", "data": sim_results}
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Monte Carlo simulation failed: {str(e)}"
-        )
+def simulate_monte_carlo(payload: MonteCarloRequest):
+    def run():
+        returns, metadata = history(payload)
+        result = run_monte_carlo_simulation(returns, payload.weights, payload.portfolio_value,
+            payload.days, payload.n_simulations, payload.confidence_level, payload.seed, payload.cash_weight)
+        metadata.update({"model_version": result["model_version"], "rebalancing": "fixed_holdings",
+            "horizon_trading_days": payload.days, "confidence_level": payload.confidence_level})
+        return {"status": "success", "data": compact_simulation(result), "metadata": metadata}
+    return guarded(run)
+
 
 @app.post("/api/v1/optimize", tags=["Portfolio Optimization"])
-async def run_portfolio_optimization(payload: OptimizationRequest):
-    """
-    Solves for Maximum Sharpe Ratio, GMV weights, and Markowitz Efficient Frontier curve.
-    """
-    try:
-        _, returns_df = fetch_portfolio_data(payload.tickers, start_date=payload.start_date)
-        
-        optimization_results = optimize_portfolio(returns_df, risk_free_rate=payload.risk_free_rate)
-        frontier_points = generate_efficient_frontier(returns_df, n_points=30, risk_free_rate=payload.risk_free_rate)
-        
-        return {
-            "status": "success", 
-            "data": {
-                "portfolios": optimization_results,
-                "efficient_frontier": frontier_points
-            }
-        }
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Portfolio optimization failed: {str(e)}"
-        )
+def run_portfolio_optimization(payload: OptimizationRequest):
+    def run():
+        returns, metadata = history(payload)
+        portfolios = optimize_portfolio(returns, payload.risk_free_rate, payload.cash_weight)
+        frontier = generate_efficient_frontier(returns, 30, payload.risk_free_rate, payload.cash_weight)
+        metadata.update({"cash_allocation": "fixed", "risk_free_rate": payload.risk_free_rate,
+            "annualisation_days": 252, "interpretation": "hypothetical_long_only_allocation"})
+        return {"status": "success", "data": {"portfolios": portfolios, "efficient_frontier": frontier}, "metadata": metadata}
+    return guarded(run)
+
 
 @app.post("/api/v1/stress-test", tags=["Crisis Stress Testing"])
-async def run_macro_stress_tests(payload: StressTestRequest):
-    """
-    Replays 2008 GFC, 2020 COVID, and 2022 Inflation shocks on current holdings.
-    """
-    try:
-        results = run_stress_test(payload.tickers, payload.weights, payload.portfolio_value)
-        return {"status": "success", "data": results}
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Stress testing scenario failed: {str(e)}"
-        )
+def run_macro_stress_tests(payload: StressTestRequest):
+    return guarded(lambda: {"status": "success", "data": run_stress_test(payload.tickers,
+        payload.weights, payload.portfolio_value, payload.cash_weight)})
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("src.api.main:app", host="127.0.0.1", port=8000, reload=True)
+
+@app.post("/api/v2/valuations", tags=["Portfolio Foundation"])
+def create_valuation(payload: ValuationRequest):
+    """Stateless valuation of explicitly supplied quotes; no quote verification or storage."""
+    return guarded(lambda: {"status": "success", "data": value_holdings(payload.holdings, payload.quotes).model_dump(mode="json"),
+        "metadata": {"quote_verification": "caller_supplied_unverified", "persistence": "none"}})

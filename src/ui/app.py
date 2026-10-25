@@ -134,16 +134,17 @@ with st.sidebar:
     markup('<div class="q-brand"><span>◈</span> QUANT</div><div class="q-mono">PORTFOLIO INTELLIGENCE</div><div class="q-side-divider"></div><div class="q-side-title">Portfolio workspace</div><div class="q-side-copy">Define your holdings. Understand your exposure.</div>')
     tickers_input = st.text_input("Asset universe", "AAPL, MSFT, NVDA, SPY, GLD", help="Comma-separated market tickers.")
     tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
-    valid = bool(tickers) and len(tickers) == len(set(tickers))
+    valid = bool(tickers) and len(tickers) <= 50 and len(tickers) == len(set(tickers))
     if not tickers:
         st.warning("Enter at least one ticker.")
     elif not valid:
-        st.warning("Please enter each ticker only once.")
+        st.warning("Enter up to 50 unique tickers.")
     portfolio_value = st.number_input("Portfolio value · USD", min_value=1.0, value=100000.0, step=5000.0)
     markup('<div class="q-side-divider"></div><div class="q-mono">MODEL PARAMETERS</div>')
     confidence = st.slider("Confidence level", .90, .99, .95, .01)
+    cash_weight = st.slider("Cash allocation · %", 0, 95, 0, 1) / 100
     horizon = st.slider("Simulation horizon · trading days", 1, 60, 10)
-    paths = min(10000, 120000 // (horizon + 1))
+    paths = min(10000, 5_000_000 // (horizon * max(len(tickers), 1)))
     weights = []
     with st.expander("Allocation weights", expanded=False):
         if valid:
@@ -153,7 +154,7 @@ with st.sidebar:
         if valid and total <= 0:
             st.warning("At least one weight must be greater than zero.")
         elif valid:
-            st.caption("Weights are normalised to 100% when you run.")
+            st.caption("Asset weights are relative within the invested portion. Cash is kept separate.")
     valid = valid and total > 0
     run = st.button("Run portfolio analysis  →", type="primary", width="stretch", disabled=not valid)
     st.caption(f"{paths:,} simulation paths · Historical daily prices")
@@ -163,15 +164,15 @@ status = "API connected" if online else "API unavailable"
 markup(f'<div class="q-topline"><div class="q-breadcrumb"><b>QUANT</b> &nbsp; / &nbsp; ANALYTICS WORKSPACE</div><span class="q-status {"" if online else "offline"}">● &nbsp; {status}</span></div><div class="q-eyebrow">RISK. ALLOCATION. RESILIENCE.</div>')
 st.title("Portfolio intelligence.")
 markup('<div class="q-subtitle">A clearer view of your portfolio. Measure downside exposure, explore optimal allocations, and test resilience across market regimes.</div>')
-weights = [w / total for w in weights] if valid else []
-signature = (tuple(tickers), tuple(weights), portfolio_value, confidence, horizon, paths)
+weights = [w / total * (1 - cash_weight) for w in weights] if valid else []
+signature = (tuple(tickers), tuple(weights), portfolio_value, confidence, horizon, paths, cash_weight)
 
 if run and valid:
-    payload = {"tickers": tickers, "weights": weights, "portfolio_value": portfolio_value}
+    payload = {"tickers": tickers, "weights": weights, "portfolio_value": portfolio_value, "cash_weight": cash_weight}
     requests_to_run = {
         "risk": ("/api/v1/risk", {**payload, "confidence_level": confidence}),
         "simulation": ("/api/v1/monte-carlo", {**payload, "confidence_level": confidence, "days": horizon, "n_simulations": paths}),
-        "optimisation": ("/api/v1/optimize", {"tickers": tickers, "risk_free_rate": .02}),
+        "optimisation": ("/api/v1/optimize", {"tickers": tickers, "risk_free_rate": .02, "cash_weight": cash_weight}),
         "stress": ("/api/v1/stress-test", payload),
     }
     with st.status("Analysing your portfolio…", expanded=True) as progress:
@@ -184,7 +185,7 @@ if run and valid:
     st.session_state["analysis"] = {
         "results": results, "signature": signature, "value": portfolio_value,
         "tickers": tickers[:], "weights": weights[:], "confidence": confidence,
-        "horizon": horizon, "paths": paths, "time": datetime.now(timezone.utc).strftime("%d %b %Y · %H:%M UTC"),
+        "horizon": horizon, "paths": paths, "cash_weight": cash_weight, "time": datetime.now(timezone.utc).strftime("%d %b %Y · %H:%M UTC"),
     }
 
 snapshot = st.session_state.get("analysis")
@@ -208,6 +209,12 @@ else:
     st.caption(" / ".join(snapshot["tickers"]) + "   ·   Calculated " + snapshot["time"])
     tabs = st.tabs(["Risk overview", "Monte Carlo", "Portfolio optimisation", "Stress testing"])
     results = snapshot["results"]
+    with st.expander("Analysis assumptions and data coverage"):
+        st.caption("Current exposures applied to historical returns; this is not your realised account history. Cash earns zero nominal return.")
+        for module, result in results.items():
+            if "metadata" in result:
+                details = result["metadata"]
+                st.write(f"{module.capitalize()}: {details.get('observations', '—')} daily observations, {details.get('observation_start', '—')} to {details.get('observation_end', '—')}.")
     chart_config = {"displaylogo": False, "scrollZoom": False, "modeBarButtonsToRemove": ["lasso2d", "select2d"]}
     with tabs[0]:
         section("Downside exposure", f"{snapshot['confidence']:.0%} CONFIDENCE · 1-DAY HORIZON")
@@ -221,8 +228,10 @@ else:
                     st.metric(label, f"${metric[dollar]:,.2f}", f"{metric[pct]:.2%} of portfolio", delta_color="off")
             tail = data["cvar_expected_shortfall"]["cvar_dollar"]
             markup(f'<div class="q-note"><b>Beyond the threshold.</b> In the historical tail beyond the {snapshot["confidence"]:.0%} VaR cutoff, the estimated average one-day loss is <b>${tail:,.2f}</b>.</div>')
-        section("Portfolio composition", "NORMALISED ALLOCATION")
+        section("Portfolio composition", "CURRENT EXPOSURE · CASH PRESERVED")
         composition = pd.DataFrame({"Asset": snapshot["tickers"], "Allocation (%)": [w * 100 for w in snapshot["weights"]], "Allocated value (USD)": [w * snapshot["value"] for w in snapshot["weights"]]})
+        if snapshot.get("cash_weight", 0):
+            composition.loc[len(composition)] = ["Cash (USD)", snapshot["cash_weight"] * 100, snapshot["cash_weight"] * snapshot["value"]]
         st.dataframe(composition, hide_index=True, width="stretch", column_config={"Allocation (%)": st.column_config.ProgressColumn(format="%.2f%%", min_value=0, max_value=100), "Allocated value (USD)": st.column_config.NumberColumn(format="$%.2f")})
     with tabs[1]:
         section("A distribution of possibilities", f"{snapshot['paths']:,} PATHS · {snapshot['horizon']} TRADING DAYS")
@@ -231,15 +240,18 @@ else:
             st.error(result["error"])
         else:
             data = result["data"]
-            st.plotly_chart(plot_monte_carlo_fan_chart(data["trajectories"], snapshot["value"]), width="stretch", config=chart_config)
+            st.plotly_chart(plot_monte_carlo_fan_chart(data["trajectories"], snapshot["value"], data.get("percentiles")), width="stretch", config=chart_config)
             for col, label, key in zip(st.columns(2), ["Simulated value at risk", "Simulated expected shortfall"], ["mc_var_dollar", "mc_cvar_dollar"]):
                 with col:
                     st.metric(label, f"${data[key]:,.2f}")
-            st.caption("Correlated arithmetic-return simulation. Bands show the 10th–90th percentiles across simulated paths.")
+            if data.get("model_version") == "lognormal-fixed-holdings-v1":
+                st.caption("Correlated lognormal simulation with fixed holdings and zero-return cash. Bands use all paths; only illustrative paths are transferred.")
+            else:
+                st.caption("Legacy arithmetic-return simulation. Rerun against the updated API to use the new model.")
             if snapshot["paths"] < 10000:
-                st.caption("The path count is reduced at longer horizons to keep hosted responses manageable.")
+                st.caption("The path count is reduced to stay within the asset-day-path computation budget.")
     with tabs[2]:
-        section("The risk–return trade-off", "LONG-ONLY · FULLY INVESTED")
+        section("The risk–return trade-off", "HYPOTHETICAL · LONG-ONLY · FIXED CASH")
         result = results["optimisation"]
         if "error" in result:
             st.error(result["error"])
@@ -258,7 +270,7 @@ else:
                     a.metric("Annualised return", f"{portfolio['return']:.2%}")
                     b.metric("Annualised volatility", f"{portfolio['volatility']:.2%}")
                     st.dataframe(pd.DataFrame({"Asset": list(portfolio["weights"]), "Weight (%)": [w * 100 for w in portfolio["weights"].values()]}), hide_index=True, width="stretch", column_config={"Weight (%)": st.column_config.NumberColumn(format="%.2f%%")})
-            st.caption("Estimated from historical returns. Annual risk-free rate: 2%. These are model estimates, not guaranteed future returns.")
+            st.caption("Hypothetical allocations with the cash weight held fixed; asset weights may sum below 100%. Estimated from historical returns. Annual risk-free rate: 2%. These are model estimates, not guaranteed future returns.")
     with tabs[3]:
         section("Resilience under pressure", "HISTORICAL CRISIS REPLAY")
         result = results["stress"]

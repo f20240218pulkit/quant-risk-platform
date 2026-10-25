@@ -21,9 +21,12 @@ def _style(fig, height=420):
     return fig
 
 
-def plot_monte_carlo_fan_chart(trajectories, initial_value):
+def plot_monte_carlo_fan_chart(trajectories, initial_value, percentiles=None):
     matrix = np.asarray(trajectories, dtype=float)
-    p10, p50, p90 = np.percentile(matrix, [10, 50, 90], axis=0)
+    if percentiles is None:
+        p10, p50, p90 = np.percentile(matrix, [10, 50, 90], axis=0)
+    else:
+        p10, p50, p90 = (percentiles[key] for key in ("p10", "p50", "p90"))
     fig = go.Figure()
     fig.add_trace(go.Scatter(y=p90, mode="lines", line=dict(width=0), name="90th percentile", hovertemplate="$%{y:,.0f}<extra>90th percentile</extra>"))
     fig.add_trace(go.Scatter(y=p10, mode="lines", line=dict(width=0), fill="tonexty", fillcolor="rgba(112,203,181,0.12)", name="10th–90th percentile", hovertemplate="$%{y:,.0f}<extra>10th percentile</extra>"))

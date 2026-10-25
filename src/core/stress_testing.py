@@ -1,132 +1,63 @@
+"""Fixed-holdings historical replay; unavailable data is never zero risk."""
 import numpy as np
 import pandas as pd
-import yfinance as yf
-from typing import Dict, List, Union
 
-# Historical crisis date windows
+from src.core.data_loader import fetch_portfolio_data
+from src.core.validation import DataQualityError, allocation, clean_tickers
+
+# End dates are inclusive here, unlike the provider API.
 CRISIS_SCENARIOS = {
-    "2008_GFC": {
-        "name": "2008 Great Financial Crisis",
-        "start": "2008-09-01",
-        "end": "2009-03-09"
-    },
-    "2020_COVID": {
-        "name": "2020 COVID-19 Liquidity Shock",
-        "start": "2020-02-19",
-        "end": "2020-03-23"
-    },
-    "2022_INFLATION": {
-        "name": "2022 Tech & Rate Hike Sell-Off",
-        "start": "2022-01-03",
-        "end": "2022-12-30"
-    }
+    "2008_GFC": {"name": "2008 Great Financial Crisis", "start": "2008-09-01", "end": "2009-03-09"},
+    "2020_COVID": {"name": "2020 COVID-19 Liquidity Shock", "start": "2020-02-19", "end": "2020-03-23"},
+    "2022_INFLATION": {"name": "2022 Tech & Rate Hike Sell-Off", "start": "2022-01-03", "end": "2022-12-30"},
 }
 
-def run_stress_test(
-    tickers: List[str],
-    weights: Union[List[float], np.ndarray],
-    portfolio_value: float = 100000.0
-) -> Dict[str, Dict[str, Union[float, str]]]:
-    """
-    Replays historical black swan crisis windows on a custom portfolio 
-    to calculate peak-to-trough max drawdowns and estimated dollar impacts.
-    """
-    cleaned_tickers = [t.strip().upper() for t in tickers]
-    weights = np.array(weights) / np.sum(weights)  # Normalize weights
-    
+
+def replay_prices(prices, weights, portfolio_value=100000.0, cash_weight=0.0):
+    weights = allocation(weights, prices.shape[1], cash_weight)
+    values = prices.to_numpy(dtype=float)
+    if len(values) < 2 or not np.isfinite(values).all() or (values <= 0).any():
+        raise DataQualityError("Crisis replay needs complete, positive prices.")
+    if not np.isfinite(portfolio_value) or portfolio_value <= 0:
+        raise ValueError("Portfolio value must be finite and positive.")
+    indexed = values / values[0] @ weights + cash_weight
+    drawdowns = indexed / np.maximum.accumulate(indexed) - 1
+    max_dd = float(drawdowns.min())
+    trough = float(indexed.min())
+    return {
+        "max_drawdown_pct": max_dd,
+        "dollar_loss": float(portfolio_value * abs(max_dd)),
+        "loss_equivalent_definition": "initial_value_times_max_drawdown",
+        "start_to_trough_return_pct": trough - 1,
+        "start_to_trough_loss": float(portfolio_value * (1 - trough)),
+        "estimated_portfolio_bottom": float(portfolio_value * trough),
+        "terminal_return_pct": float(indexed[-1] - 1),
+        "terminal_value": float(portfolio_value * indexed[-1]),
+        "observation_start": str(prices.index[0].date()),
+        "observation_end": str(prices.index[-1].date()),
+        "observations": len(prices), "cash_weight": cash_weight,
+        "rebalancing": "fixed_holdings",
+    }
+
+
+def run_stress_test(tickers, weights, portfolio_value=100000.0, cash_weight=0.0):
+    tickers = clean_tickers(tickers)
+    allocation(weights, len(tickers), cash_weight)
     results = {}
-    
-    for scenario_key, scenario_info in CRISIS_SCENARIOS.items():
+    for key, scenario in CRISIS_SCENARIOS.items():
+        base = {"scenario_name": scenario["name"], "requested_start": scenario["start"], "requested_end": scenario["end"]}
         try:
-            # Download historical price data for the specific crisis window
-            raw_data = yf.download(
-                tickers=cleaned_tickers,
-                start=scenario_info["start"],
-                end=scenario_info["end"],
-                progress=False
-            )
-            
-            if "Adj Close" in raw_data:
-                prices = raw_data["Adj Close"]
-            elif "Close" in raw_data:
-                prices = raw_data["Close"]
-            else:
-                prices = raw_data
-
-            if isinstance(prices, pd.Series):
-                prices = prices.to_frame(name=cleaned_tickers[0])
-
-            prices = prices.ffill().bfill()
-            
-            # Check if all requested assets were active during this historical period
-            missing_tickers = [t for t in cleaned_tickers if t not in prices.columns or prices[t].isna().all()]
-            
-            if missing_tickers:
-                results[scenario_key] = {
-                    "scenario_name": scenario_info["name"],
-                    "status": "Incomplete Data",
-                    "note": f"Assets not trading during this era: {', '.join(missing_tickers)}",
-                    "max_drawdown_pct": 0.0,
-                    "dollar_loss": 0.0
-                }
-                continue
-                
-            # Normalize price series to 1.0 at start of crisis
-            normalized_prices = prices / prices.iloc[0]
-            
-            # Compute daily weighted portfolio value indexed to 1.0
-            portfolio_indexed = np.dot(normalized_prices, weights)
-            portfolio_series = pd.Series(portfolio_indexed, index=prices.index)
-            
-            # Calculate Peak-to-Trough Maximum Drawdown
-            running_max = portfolio_series.cummax()
-            drawdown_series = (portfolio_series - running_max) / running_max
-            max_drawdown_pct = float(drawdown_series.min())
-            
-            dollar_loss = float(portfolio_value * abs(max_drawdown_pct))
-            
-            results[scenario_key] = {
-                "scenario_name": scenario_info["name"],
-                "status": "Success",
-                "max_drawdown_pct": float(max_drawdown_pct),
-                "dollar_loss": float(dollar_loss),
-                "estimated_portfolio_bottom": float(portfolio_value - dollar_loss)
-            }
-            
-        except Exception as e:
-            results[scenario_key] = {
-                "scenario_name": scenario_info["name"],
-                "status": "Error",
-                "note": str(e),
-                "max_drawdown_pct": 0.0,
-                "dollar_loss": 0.0
-            }
-            
+            exclusive_end = (pd.Timestamp(scenario["end"]) + pd.Timedelta(days=1)).date().isoformat()
+            prices, _ = fetch_portfolio_data(tickers, scenario["start"], exclusive_end)
+            # Reject obviously truncated histories, while allowing boundary holidays.
+            if ((prices.index[0].date() - pd.Timestamp(scenario["start"]).date()).days > 7
+                or (pd.Timestamp(scenario["end"]).date() - prices.index[-1].date()).days > 7):
+                raise DataQualityError("History does not span the requested crisis window.")
+            results[key] = {**base, "status": "Success", **replay_prices(prices, weights, portfolio_value, cash_weight)}
+        except DataQualityError as exc:
+            results[key] = {**base, "status": "Incomplete Data", "note": str(exc),
+                "max_drawdown_pct": None, "dollar_loss": None}
+        except Exception:
+            results[key] = {**base, "status": "Error", "note": "Crisis data could not be retrieved or processed.",
+                "max_drawdown_pct": None, "dollar_loss": None}
     return results
-
-if __name__ == "__main__":
-    import sys
-    from pathlib import Path
-    
-    root_dir = Path(__file__).resolve().parent.parent.parent
-    if str(root_dir) not in sys.path:
-        sys.path.append(str(root_dir))
-        
-    test_tickers = ["AAPL", "MSFT", "SPY", "GLD"]
-    test_weights = [0.25, 0.25, 0.25, 0.25]
-    portfolio_val = 100000.0
-    
-    print(f"Replaying historical shock scenarios on ${portfolio_val:,.2f} portfolio...")
-    print(f"Holdings: {', '.join(test_tickers)}\n")
-    
-    stress_results = run_stress_test(test_tickers, test_weights, portfolio_val)
-    
-    print("--- HISTORICAL STRESS-TEST REPORT ---")
-    for key, data in stress_results.items():
-        print(f"\nScenario: {data['scenario_name']}")
-        if data["status"] == "Success":
-            print(f"  Max Peak-to-Trough Drawdown: {data['max_drawdown_pct']*100:.2f}%")
-            print(f"  Estimated Dollar Impact:     -${data['dollar_loss']:,.2f}")
-            print(f"  Simulated Portfolio Floor:   ${data['estimated_portfolio_bottom']:,.2f}")
-        else:
-            print(f"  Status: {data['status']} ({data.get('note', '')})")
