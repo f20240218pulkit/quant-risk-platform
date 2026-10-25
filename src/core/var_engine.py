@@ -1,6 +1,7 @@
 import numpy as np
 import scipy.stats as stats
 import pandas as pd
+from src.core.validation import risk_inputs
 from typing import Dict, Union
 
 def calculate_parametric_var(
@@ -11,6 +12,7 @@ def calculate_parametric_var(
     """
     Calculates Parametric (Variance-Covariance) Value at Risk.
     """
+    returns = risk_inputs(returns, portfolio_value, confidence_level)
     mean_return = np.mean(returns)
     std_dev = np.std(returns)
     
@@ -34,9 +36,10 @@ def calculate_historical_var(
     """
     Calculates Historical Simulation Value at Risk using empirical percentiles.
     """
+    returns = risk_inputs(returns, portfolio_value, confidence_level)
     # Convert confidence level to lower tail percentile (e.g., 95% conf -> 5th percentile)
     percentile = (1 - confidence_level) * 100
-    var_pct = -np.percentile(returns, percentile)
+    var_pct = -np.percentile(returns, percentile, method="linear")
     var_dollar = portfolio_value * var_pct
     
     return {
@@ -52,8 +55,9 @@ def calculate_cvar(
     """
     Calculates Conditional VaR (Expected Shortfall) - the expected tail loss beyond VaR.
     """
+    returns = risk_inputs(returns, portfolio_value, confidence_level)
     percentile = (1 - confidence_level) * 100
-    var_pct_threshold = np.percentile(returns, percentile)
+    var_pct_threshold = np.percentile(returns, percentile, method="linear")
     
     # Filter returns that are worse than the VaR cutoff line
     tail_losses = returns[returns <= var_pct_threshold]

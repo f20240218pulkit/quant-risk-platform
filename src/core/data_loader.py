@@ -1,62 +1,55 @@
-import yfinance as yf
-import pandas as pd
+"""Explicit adjusted-price download and strict observation validation."""
+from typing import Optional
+
 import numpy as np
-from typing import List, Tuple, Optional
+import pandas as pd
+import yfinance as yf
 
-def fetch_portfolio_data(
-    tickers: List[str],
-    start_date: str = "2020-01-01",
-    end_date: Optional[str] = None
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Fetches historical adjusted close prices for a portfolio of tickers 
-    and computes daily percentage returns.
-    
-    Returns:
-        Tuple[pd.DataFrame, pd.DataFrame]: (prices_df, returns_df)
-    """
-    # Sanitize ticker inputs
-    cleaned_tickers = [t.strip().upper() for t in tickers]
-    
-    # Fetch historical price data
-    raw_data = yf.download(
-        tickers=cleaned_tickers, 
-        start=start_date, 
-        end=end_date, 
-        progress=False
-    )
-    
-    # Extract Adjusted Close prices (fallback to Close if Adj Close isn't present)
-    if "Adj Close" in raw_data:
-        prices = raw_data["Adj Close"]
-    elif "Close" in raw_data:
+from src.core.validation import DataQualityError, clean_tickers
+
+
+def extract_prices(raw_data, tickers):
+    """Handle yfinance's single/multiple-symbol shape without changing order."""
+    if raw_data is None or raw_data.empty:
+        raise DataQualityError("The provider returned no price observations.")
+    if isinstance(raw_data.columns, pd.MultiIndex):
+        if "Close" not in raw_data.columns.get_level_values(0):
+            raise DataQualityError("The provider did not return adjusted Close prices.")
         prices = raw_data["Close"]
+    elif "Close" in raw_data.columns and len(tickers) == 1:
+        prices = raw_data["Close"].to_frame(name=tickers[0])
     else:
-        prices = raw_data
-
-    # Handle edge case when requesting a single ticker (returns Series instead of DataFrame)
+        raise DataQualityError("Unexpected provider price schema.")
     if isinstance(prices, pd.Series):
-        prices = prices.to_frame(name=cleaned_tickers[0])
-        
-    # Data cleaning: forward-fill missing trading days and drop empty rows
-    prices = prices.ffill().dropna()
-    
-    # Compute daily arithmetic percentage returns
-    returns = prices.pct_change().dropna()
-    
-    return prices, returns
+        prices = prices.to_frame(name=tickers[0])
+    return prices
 
-if __name__ == "__main__":
-    # Test fetch with a multi-asset allocation portfolio
-    test_tickers = ["AAPL", "MSFT", "NVDA", "SPY", "GLD"]
-    print(f"Fetching market data for: {', '.join(test_tickers)}...")
-    
-    prices, returns = fetch_portfolio_data(test_tickers, start_date="2023-01-01")
-    
-    print("\n--- LATEST DAILY PRICES ---")
-    print(prices.tail())
-    
-    print("\n--- LATEST DAILY RETURNS ---")
-    print(returns.tail())
-    
-    print(f"\nSuccessfully downloaded {len(prices)} trading days of data.")
+
+def validate_prices(prices, tickers, min_observations=3):
+    tickers = clean_tickers(tickers)
+    if prices.columns.has_duplicates or prices.index.has_duplicates or not prices.index.is_monotonic_increasing:
+        raise DataQualityError("Price symbols and dates must be unique and ordered.")
+    missing = [ticker for ticker in tickers if ticker not in prices.columns]
+    if missing:
+        raise DataQualityError("Missing price history: " + ", ".join(missing))
+    prices = prices.loc[:, tickers].copy()
+    if len(prices) < min_observations:
+        raise DataQualityError(f"Require at least {min_observations} price observations.")
+    values = prices.to_numpy(dtype=float)
+    if not np.isfinite(values).all() or (values <= 0).any():
+        raise DataQualityError("Price history contains missing, non-finite, or non-positive values; no filling was applied.")
+    return prices
+
+
+def fetch_portfolio_data(tickers, start_date="2020-01-01", end_date: Optional[str] = None):
+    """End date is exclusive. No implicit filling or silently shortened history.
+
+    This first release requires a complete shared calendar. Cross-market calendar
+    reconciliation and bounded stale observations belong to the FX milestone.
+    """
+    tickers = clean_tickers(tickers)
+    raw = yf.download(tickers=tickers, start=start_date, end=end_date,
+                      auto_adjust=True, progress=False)
+    prices = validate_prices(extract_prices(raw, tickers), tickers)
+    returns = prices.pct_change(fill_method=None).iloc[1:]
+    return prices, returns
