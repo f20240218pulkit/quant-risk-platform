@@ -8,3 +8,8 @@ build/
 dist/
 .env
 .streamlit/secrets.toml
+
+.workbench/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
