@@ -14,8 +14,15 @@ def configure_identity():
         return
     with st.sidebar:
         st.divider()
-        if not st.user.is_logged_in:
-            st.button("Sign in for saved reviews", on_click=st.login)
+        if not st.user.get("is_logged_in", False):
+            try:
+                configured = "auth" in st.secrets
+            except FileNotFoundError:
+                configured = False
+            if configured:
+                st.button("Sign in for saved reviews", on_click=st.login)
+            else:
+                st.caption("Private workspace sign-in has not been configured.")
         else:
             st.button("Sign out", on_click=st.logout)
 
@@ -23,7 +30,7 @@ def configure_identity():
 def workspace():
     path = os.getenv("WORKBENCH_DB")
     if path:
-        if not st.user.is_logged_in:
+        if not st.user.get("is_logged_in", False):
             raise ValueError("Sign in to use the private workspace.")
         try:
             owner = identity_key(st.user.get("iss"), st.user.get("sub"), st.user.get("exp"))

@@ -47,3 +47,12 @@ def test_synthetic_broker_import_produces_reviewable_holdings():
     click(app, "Load sample broker holdings")
     assert app.session_state["broker_snapshot"]["cash"] == {"USD": "2000"}
     assert any(item.label == "Download broker holdings CSV" for item in app.get("download_button"))
+
+
+def test_private_mode_without_credentials_fails_closed(monkeypatch, tmp_path):
+    monkeypatch.setenv("WORKBENCH_DB", str(tmp_path / "private.sqlite3"))
+    app = AppTest.from_file(str(ROOT / "streamlit_app.py"), default_timeout=30).run()
+    assert not app.exception
+    app = page("saved_page")
+    assert any("Sign in to use the private workspace" in message.value for message in app.info)
+    assert not (tmp_path / "private.sqlite3").exists()
