@@ -60,3 +60,24 @@ CSV import/review, instrument resolution, automatic current-price valuation,
 portfolio-based analysis orchestration, historical FX, authenticated saved
 portfolios, durable jobs and broker connections are not implemented yet. Existing
 v1 ticker inputs do not verify currency; the dashboard remains USD-labelled.
+
+## Portfolio Workbench
+
+The first combined product milestone adds a local review workflow. Start it from
+the repository root after installing the test and UI extras above.
+
+```bash
+python -m streamlit run src/ui/workbench.py --server.address=127.0.0.1 --server.maxUploadSize=6
+```
+
+Preview the offline sample or load the two CSV templates from the sidebar. For
+real holdings, supply a holdings snapshot, the matching history of closing
+prices, and the cash balance. The review shows total value and concentration,
+one-session downside risk, a cash-matched benchmark, and a price shock. Export the
+review as JSON to retain the input identifiers, dates, assumptions and results.
+Prices are as supplied. The workspace processes files locally when run with the
+command above. It requires a single USD or AUD portfolio and 253–2,500 matching
+session dates, with closes expressed in major currency units.
+
+See the [product blueprint and staged acceptance gates](docs/portfolio-workbench.md)
+for the news, execution, research, monitoring and broker roadmap.
