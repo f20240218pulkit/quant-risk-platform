@@ -28,7 +28,7 @@ class ImportIssue(ValueError):
     """An issue users can fix in the named input file."""
 
 
-def _rows(content, header, max_bytes, max_rows):
+def _rows(content, header, max_bytes, max_rows, *, field_limit=64):
     if len(content) > max_bytes:
         raise ImportIssue(f"File exceeds the {max_bytes:,}-byte limit.")
     try:
@@ -53,8 +53,8 @@ def _rows(content, header, max_bytes, max_rows):
             count += 1
             if count > max_rows:
                 raise ImportIssue(f"File exceeds the {max_rows:,}-row limit.")
-            if len(row) != len(fields) or any(len(value) > 64 for value in row):
-                raise ImportIssue(f"Line {line}: wrong number of columns or field longer than 64 characters.")
+            if len(row) != len(fields) or any(len(value) > field_limit for value in row):
+                raise ImportIssue(f"Line {line}: wrong number of columns or field longer than {field_limit} characters.")
             yield line, dict(zip(actual, (value.strip() for value in row)))
         if not count:
             raise ImportIssue("The CSV has a header but no data rows.")

@@ -21,6 +21,7 @@ class PreparedReview:
     closes: pd.DataFrame
     prices_id: str
     demo: bool
+    source: str = "user-supplied closes"
 
 
 def prepare_review(holdings_csv: bytes, close_csv: bytes, cash: str, currency, *, demo=False):
@@ -73,7 +74,7 @@ def review_portfolio(prepared: PreparedReview) -> tuple[dict, pd.DataFrame]:
         raise ValueError("The submitted price ranges could not be compared.")
     report = {
         "format": REPORT_VERSION,
-        "source": "synthetic demo" if prepared.demo else "user-supplied closes",
+        "source": "synthetic demo" if prepared.demo else prepared.source,
         "holdings_id": prepared.holdings.snapshot_id,
         "valuation_id": valuation.valuation_id,
         "price_dataset_id": prepared.prices_id,
@@ -94,7 +95,9 @@ def review_portfolio(prepared: PreparedReview) -> tuple[dict, pd.DataFrame]:
             "Replay starts at 100 using valuation-date weights, then holds quantities fixed.",
             "The benchmark gives the same invested sleeve equal initial weights and preserves cash.",
             "Cash earns zero. This replay excludes fills, fees, slippage and corporate-action accounting.",
-            "Dates are user-supplied sessions. The valuation quote timestamp is a session-date marker.",
+            "The valuation quote timestamp is a session-date marker.",
+            ("Yahoo adjusted closes drive historical analytics; unadjusted closes drive valuation."
+             if prepared.source == "Yahoo Finance" else "Session dates are supplied by the upload or synthetic dataset."),
         ],
     }
     return report, paths
