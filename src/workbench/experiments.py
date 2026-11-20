@@ -20,7 +20,8 @@ class ExperimentConfig:
 
     def __post_init__(self):
         if not (0 <= self.fee_bps <= 100 and 0 <= self.slippage_bps <= 100
-                and 0 <= self.cash_weight < 1 and 1 <= self.rebalance_sessions <= 60
+                and 0 <= self.cash_weight < 1 and isinstance(self.rebalance_sessions, int)
+                and 1 <= self.rebalance_sessions <= 60
                 and 0 < self.initial_cash <= 1e9):
             raise ValueError("Experiment settings are outside the supported limits.")
 
@@ -75,10 +76,13 @@ def _train_ppo(data, features, end, seed, config):
 
     policy = np.zeros((len(state(20, np.zeros(n), 1.0)), n + 1))
     sigma = .45
+    training_steps = range(20, end - 1, config.rebalance_sessions)
+    if len(training_steps) < 3:
+        raise ValueError("PPO needs at least three training rebalances. Shorten the interval or provide longer history.")
     for _ in range(6):
         states, actions, rewards = [], [], []
         cash, units, previous = config.initial_cash, np.zeros(n), config.initial_cash
-        for index in range(20, end - 1):
+        for index in training_steps:
             old = units * data.closes.iloc[index].to_numpy()
             equity = cash + old.sum()
             states.append(state(index, old / equity, cash / equity))
@@ -87,7 +91,8 @@ def _train_ppo(data, features, end, seed, config):
             fill = rebalance(cash, units, data.opens.iloc[index + 1].to_numpy(), target,
                              config.fee_bps, config.slippage_bps)
             cash, units = fill.cash, fill.units
-            marked = float(cash + units @ data.closes.iloc[index + 1].to_numpy())
+            mark_index = min(end - 1, index + config.rebalance_sessions)
+            marked = float(cash + units @ data.closes.iloc[mark_index].to_numpy())
             rewards.append(np.log(marked / previous))
             previous = marked
         x, actions = np.asarray(states), np.asarray(actions)
@@ -164,9 +169,23 @@ def run_experiment(data, config=ExperimentConfig()):
         runs[name] = {"frame": frame, "ledger": ledger,
                       "metrics": performance(frame, ledger, config.initial_cash)}
     ablation = None
+    sensitivity = []
     if has_news:
         a, b = runs["Price ridge"]["metrics"], runs["Price + sentiment ridge"]["metrics"]
         ablation = {k: b[k] - a[k] for k in ("period_return", "max_drawdown", "fees", "turnover")}
+        for multiplier in (0, 1, 2):
+            fees = min(100., config.fee_bps * multiplier)
+            slip = min(100., config.slippage_bps * multiplier)
+            net = {}
+            for name in ("Price ridge", "Price + sentiment ridge"):
+                if multiplier == 1:
+                    net[name] = runs[name]["metrics"]["period_return"]
+                else:
+                    replay, _ = simulate(data, targets[name], start, initial_cash=config.initial_cash,
+                                         fee_bps=fees, slippage_bps=slip)
+                    net[name] = float(replay["equity"].iloc[-1] / config.initial_cash - 1)
+            sensitivity.append({"fee_bps": fees, "slippage_bps": slip, **net,
+                                "sentiment_delta": net["Price + sentiment ridge"] - net["Price ridge"]})
         # Use compounded matched returns across contiguous, non-overlapping
         # reporting windows. Windows are descriptive, not independent trials.
         a_returns = runs["Price ridge"]["frame"]["return"]
@@ -180,7 +199,7 @@ def run_experiment(data, config=ExperimentConfig()):
     return {"dataset_id": data.dataset_id, "score_source": data.score_source,
             "news_covered_asset_sessions": int(np.count_nonzero(sentiment[:, :, 1])),
             "total_asset_sessions": int(sentiment.shape[0] * sentiment.shape[1]), "runs": runs,
-            "folds": folds, "ablation": ablation}
+            "folds": folds, "ablation": ablation, "cost_sensitivity": sensitivity}
 
 
 def experiment_report(result, config):

@@ -12,6 +12,8 @@ from src.workbench.storage import Store
 
 
 def process_one(store):
+    if os.getenv("WORKBENCH_YAHOO_PERSONAL_USE") == "1":
+        store.enqueue_due_refreshes()
     job = store.claim()
     if job is None:
         return False
@@ -22,13 +24,16 @@ def process_one(store):
             news = base64.b64decode(payload["news"], validate=True) if payload.get("news") else None
             config = ExperimentConfig(**payload["config"])
             result = experiment_report(run_experiment(parse_research_data(bars, news), config), config)
+            result["dataset_type"] = "synthetic demo" if payload.get("synthetic") else "user-supplied"
         elif job["kind"] == "refresh":
+            if os.getenv("WORKBENCH_YAHOO_PERSONAL_USE") != "1":
+                raise ValueError("Market refresh is disabled.")
             prepared = prepare_market_review(base64.b64decode(payload["holdings"], validate=True),
                                              payload["cash"], payload["currency"])
             result, _ = review_portfolio(confirm_review(prepared))
         else:
             raise ValueError("Unsupported job.")
-        store.finish(job, result)
+        store.finish(job, result, watch=job["payload"].get("watch") if job["kind"] == "refresh" else None)
     except ValueError as exc:
         # No raw row data or provider exception is placed in a durable job log.
         store.finish(job, {"error": "Job inputs or provider coverage did not pass validation."},

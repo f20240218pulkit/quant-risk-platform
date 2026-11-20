@@ -81,3 +81,17 @@ session dates, with closes expressed in major currency units.
 
 See the [product blueprint and staged acceptance gates](docs/portfolio-workbench.md)
 for the news, execution, research, monitoring and broker roadmap.
+
+### Combined workspace
+
+Use the root entry point for **Portfolio review**, **Strategy research**,
+**Saved reviews & alerts**, **AUD and USD analysis**, and **Broker import**.
+
+```bash
+python -m pip install '.[ui,test]'
+python -m streamlit run streamlit_app.py --server.address=127.0.0.1 --server.maxUploadSize=6
+```
+
+Each workflow has a labelled synthetic example. To run on your own data, use
+the CSV formats shown on each page. For configuration, optional integrations,
+dataset assumptions and verification boundaries see [Workspace operations](docs/workbench-operations.md).

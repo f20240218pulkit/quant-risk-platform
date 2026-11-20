@@ -29,6 +29,11 @@ create table if not exists jobs (
     lease real, claim text, attempts int not null default 0, result text,
     primary key(owner, id)
 );
+create table if not exists watches (
+    owner text not null, name text not null, payload text not null, due real not null,
+    primary key(owner, name)
+);
+create index if not exists watches_due on watches(due);
 create index if not exists jobs_ready on jobs(status, available, lease);
 """
 
@@ -71,22 +76,31 @@ class Store:
         key = report["valuation_id"]
         now = datetime.now(timezone.utc).isoformat()
         with self.connection() as db:
-            db.execute("insert or ignore into reviews values(?,?,?,?,?)", (owner, key, name, now, _json(report)))
-            if report["source"] == "synthetic demo":
-                return key
-            for rule in db.execute("select * from rules where owner=? and name=?", (owner, name)).fetchall():
-                if rule["kind"] == "largest":
-                    observed = max(float(p["weight"]) for p in report["valuation"]["positions"])
-                    text = "Largest holding weight"
-                else:
-                    observed = report["risk"]["historical_var"]["var_pct"]
-                    text = "One-session historical VaR"
-                if observed >= rule["threshold"]:
-                    alert_id = hashlib.sha256(f"{rule['id']}:{key}".encode()).hexdigest()
-                    db.execute("""insert or ignore into alerts(owner,id,rule_id,review_id,as_of,message)
-                                  values(?,?,?,?,?,?)""",
-                               (owner, alert_id, rule["id"], key, report["session_end"],
-                                f"{text} was {observed:.2%} against your {rule['threshold']:.2%} threshold."))
+            return self._save_review(db, owner, name, report, key, now)
+
+    @staticmethod
+    def _save_review(db, owner, name, report, key, now):
+        db.execute("""insert into reviews values(?,?,?,?,?) on conflict(owner,id)
+                      do update set payload=excluded.payload where reviews.name=excluded.name""",
+                   (owner, key, name, now, _json(report)))
+        stored = db.execute("select name from reviews where owner=? and id=?", (owner, key)).fetchone()
+        if stored["name"] != name:
+            raise ValueError("This review was already saved under a different name. Run another review to save it separately.")
+        if report["source"] == "synthetic demo":
+            return key
+        for rule in db.execute("select * from rules where owner=? and name=?", (owner, name)).fetchall():
+            if rule["kind"] == "largest":
+                observed = max(float(p["weight"]) for p in report["valuation"]["positions"])
+                text = "Largest holding weight"
+            else:
+                observed = report["risk"]["historical_var"]["var_pct"]
+                text = "One-session historical VaR"
+            if observed >= rule["threshold"]:
+                alert_id = hashlib.sha256(f"{rule['id']}:{key}".encode()).hexdigest()
+                db.execute("""insert or ignore into alerts(owner,id,rule_id,review_id,as_of,message)
+                              values(?,?,?,?,?,?)""",
+                           (owner, alert_id, rule["id"], key, report["session_end"],
+                            f"{text} was {observed:.2%} against your {rule['threshold']:.2%} threshold."))
         return key
 
     def reviews(self, owner):
@@ -101,8 +115,14 @@ class Store:
 
     def delete_review(self, owner, key):
         with self.connection() as db:
+            row = db.execute("select name from reviews where owner=? and id=?", (owner, key)).fetchone()
+            if row is None:
+                return False
             db.execute("delete from alerts where owner=? and review_id=?", (owner, key))
-            return db.execute("delete from reviews where owner=? and id=?", (owner, key)).rowcount == 1
+            db.execute("delete from reviews where owner=? and id=?", (owner, key))
+            if not db.execute("select 1 from reviews where owner=? and name=?", (owner, row["name"])).fetchone():
+                db.execute("delete from watches where owner=? and name=?", (owner, row["name"]))
+            return True
 
     def add_rule(self, owner, name, kind, threshold):
         if kind not in {"largest", "var"} or not 0 < threshold <= 1 or not 1 <= len(name.strip()) <= 80:
@@ -130,7 +150,7 @@ class Store:
 
     def purge(self, owner):
         with self.connection() as db:
-            for table in ("alerts", "rules", "reviews", "jobs"):
+            for table in ("alerts", "rules", "reviews", "jobs", "watches"):
                 db.execute(f"delete from {table} where owner=?", (owner,))
 
     def enqueue(self, owner, kind, payload, now=None):
@@ -156,6 +176,46 @@ class Store:
                           claim=null,lease=null""", (owner,key,kind,encoded,now,now))
         return key
 
+    def watch(self, owner, name, payload, now=None):
+        now = time.time() if now is None else now
+        name = name.strip()
+        if not 1 <= len(name) <= 80:
+            raise ValueError("Enter a name from 1 to 80 characters.")
+        with self.connection() as db:
+            db.execute("""insert into watches values(?,?,?,?) on conflict(owner,name)
+                       do update set payload=excluded.payload,due=excluded.due""",
+                       (owner, name, _json(payload), now + 86400))
+
+    def watches(self, owner):
+        with self.connection() as db:
+            return [row["name"] for row in db.execute(
+                "select name from watches where owner=? order by name", (owner,))]
+
+    def unwatch(self, owner, name):
+        with self.connection() as db:
+            db.execute("delete from watches where owner=? and name=?", (owner, name))
+
+    def enqueue_due_refreshes(self, now=None):
+        now = time.time() if now is None else now
+        request_day = datetime.fromtimestamp(now, tz=timezone.utc).date().isoformat()
+        with self.connection() as db:
+            db.execute("begin immediate")
+            watches = db.execute("select * from watches where due<=? order by due limit 25", (now,)).fetchall()
+            for row in watches:
+                count = db.execute("select count(*) from jobs where owner=? and status in ('queued','running')",
+                                   (row["owner"],)).fetchone()[0]
+                if count >= 3:
+                    db.execute("update watches set due=? where owner=? and name=?",
+                               (now + 300, row["owner"], row["name"]))
+                    continue
+                payload = {**json.loads(row["payload"]), "watch": row["name"], "request_day": request_day}
+                encoded = _json(payload)
+                job_id = hashlib.sha256(encoded.encode()).hexdigest()
+                db.execute("""insert or ignore into jobs(owner,id,kind,payload,created,available)
+                              values(?,?,'refresh',?,?,?)""", (row["owner"], job_id, encoded, now, now))
+                db.execute("update watches set due=? where owner=? and name=?",
+                           (now + 86400, row["owner"], row["name"]))
+
     def claim(self, now=None, lease_seconds=600):
         now = time.time() if now is None else now
         claim = uuid.uuid4().hex
@@ -173,7 +233,7 @@ class Store:
             return {**dict(row), "payload": json.loads(row["payload"]),
                     "claim": claim, "attempts": row["attempts"] + 1}
 
-    def finish(self, job, result, *, error=False, retry=False, now=None):
+    def finish(self, job, result, *, error=False, retry=False, now=None, watch=None):
         now = time.time() if now is None else now
         with self.connection() as db:
             db.execute("begin immediate")
@@ -183,6 +243,19 @@ class Store:
                              (job["owner"], job["id"], job["claim"], now)).fetchone()
             if not row:
                 return False
+            if watch and not error:
+                active = db.execute("select payload from watches where owner=? and name=?",
+                                    (job["owner"], watch)).fetchone()
+                scheduled = job["payload"]
+                current = json.loads(active["payload"]) if active else None
+                same_watch = current and all(current.get(k) == scheduled.get(k) for k in current)
+                if same_watch:
+                    prior = db.execute("""select json_extract(payload,'$.session_end') as session
+                                      from reviews where owner=? and name=?
+                                      order by session desc limit 1""", (job["owner"], watch)).fetchone()
+                    if prior is None or result["session_end"] > prior["session"]:
+                        self._save_review(db, job["owner"], watch, result, result["valuation_id"],
+                                          datetime.now(timezone.utc).isoformat())
             retry = retry and job["attempts"] < 3
             status = "queued" if retry else ("failed" if error else "complete")
             db.execute("""update jobs set status=?,result=?,available=?,lease=null,claim=null,

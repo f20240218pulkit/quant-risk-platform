@@ -94,7 +94,7 @@ def test_streamlit_demo_reviews_before_confirming_and_can_reset():
     click("Preview sample")
     assert not app.tabs
     click("Confirm and run review")
-    assert len(app.tabs) == 3
+    assert len(app.tabs) == 4
     assert any(item.label == "Download review" for item in app.get("download_button"))
     click("Start over")
     assert not app.tabs

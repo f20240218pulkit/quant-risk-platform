@@ -1,6 +1,7 @@
 """AUD/USD mixed-currency review using explicit, aligned price and FX observations."""
 from datetime import datetime, timezone
 from decimal import Decimal
+from hashlib import sha256
 
 import pandas as pd
 from pydantic import TypeAdapter
@@ -65,6 +66,7 @@ def mixed_review(holdings_csv, prices_csv, fx_csv, cash_aud, cash_usd, base):
             raise ImportIssue(f"FX line {line}: {exc}") from exc
     if factors.keys() != sessions:
         raise ImportIssue("Supply one FX rate for every closing-price session.")
+    fx_id = sha256("".join(f"{d},{format(r.normalize(), 'f')}\n" for d, r in sorted(factors.items())).encode()).hexdigest()
     pivot = prices.index[-1]
     rate = factors[str(pivot)]
     conversion = {"USD": Decimal(1) if base == "USD" else rate,
@@ -90,6 +92,6 @@ def mixed_review(holdings_csv, prices_csv, fx_csv, cash_aud, cash_usd, base):
     returns = validate_returns(panel.pct_change(fill_method=None).iloc[1:], 252)
     path = panel.div(panel.iloc[0]).dot(weights) * 100
     return {"base": base, "total": str(total), "as_of": str(pivot), "rate": str(rate),
-            "values": {k: str(v) for k, v in values.items()}, "price_dataset_id": price_id,
+            "values": {k: str(v) for k, v in values.items()}, "price_dataset_id": price_id, "fx_dataset_id": fx_id,
             "risk": run_risk_suite(returns.dot(weights), float(total), .95),
             "replay": _summary(path), "weights": weights.to_dict(), "path": path}

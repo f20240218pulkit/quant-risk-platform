@@ -87,7 +87,7 @@ class PersonalBroker:
 
     def portal(self, connection=None):
         kwargs = {"reconnect": connection} if connection else {}
-        link = self.api.authentication.login_snap_trade_user(connection_type="read", **kwargs).body["redirectURI"]
+        link = self.api.authentication.login_snap_trade_user(connection_type="read", timeout=10, **kwargs).body["redirectURI"]
         url = urlsplit(link)
         if (url.scheme != "https" or not url.hostname or
                 not (url.hostname == "snaptrade.com" or url.hostname.endswith(".snaptrade.com")) or url.username):
@@ -95,18 +95,21 @@ class PersonalBroker:
         return link
 
     def accounts(self):
-        rows = self.api.account_information.list_all_user_accounts().body["results"]
+        rows = self.api.account_information.list_all_user_accounts(timeout=10).body["results"]
         return [row for row in rows if row.get("kind") == "investment"]
 
     def connection(self, connection):
-        return self.api.connections.detail_brokerage_authorization(authorization_id=connection).body
+        return self.api.connections.detail_brokerage_authorization(authorization_id=connection, timeout=10).body
 
     def sync(self, account):
         connection = self.connection(account["brokerage_authorization"])
         if connection.get("disabled") is not False:
             raise ImportIssue("Connection is disabled or its health is unknown. Reconnect before refreshing.")
         api = self.api.account_information
-        data = api.get_all_account_positions(account_id=account["id"]).body
-        cash = api.get_user_account_balance(account_id=account["id"]).body
+        data = api.get_all_account_positions(account_id=account["id"], timeout=10).body
+        cash = api.get_user_account_balance(account_id=account["id"], timeout=10).body
         return {**reconcile(data["results"], cash), "retrieved_at": datetime.now(timezone.utc).isoformat(),
                 "freshness": "Broker-reported balance and positions may be cached"}
+
+    def disconnect(self, connection):
+        self.api.connections.delete_connection(connection_id=connection, timeout=10)

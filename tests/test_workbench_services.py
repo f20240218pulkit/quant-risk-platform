@@ -95,3 +95,28 @@ def test_worker_processes_actual_research_report(tmp_path):
     assert process_one(storage)
     assert storage.jobs("alpha")[0]["status"] == "complete"
     assert "Price + sentiment ridge" in storage.job_result("alpha", key)["runs"]
+
+
+def test_daily_refresh_keeps_last_good_then_publishes_newer_review(tmp_path):
+    storage = Store(tmp_path / "workbench.sqlite3")
+    old, _ = review_portfolio(prepare_review(HOLDINGS_SAMPLE, demo_closes(), "2000", "USD"))
+    storage.save_review("user", "Portfolio", old)
+    storage.add_rule("user", "Portfolio", "largest", .2)
+    storage.watch("user", "Portfolio", {"holdings": "unused", "cash": "2000", "currency": "USD"}, now=1)
+    assert storage.watches("other") == []
+    storage.enqueue_due_refreshes(now=86401)
+    storage.enqueue_due_refreshes(now=86401)
+    assert len(storage.jobs("user")) == 1
+    job = storage.claim(now=86401)
+    assert storage.finish(job, {"error": "feed unavailable"}, error=True, now=86402, watch="Portfolio")
+    assert storage.read_review("user", old["valuation_id"]) == old
+    assert len(storage.reviews("user")) == 1
+    assert not storage.alerts("user")
+    storage.enqueue_due_refreshes(now=172801)
+    job = storage.claim(now=172801)
+    new = {**old, "valuation_id": "new", "session_end": "2025-01-30"}
+    assert storage.finish(job, new, now=172802, watch="Portfolio")
+    assert storage.read_review("user", "new") == new
+    assert len(storage.alerts("user")) == 1
+    storage.unwatch("user", "Portfolio")
+    assert storage.watches("user") == []
