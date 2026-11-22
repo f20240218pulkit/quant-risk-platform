@@ -34,9 +34,11 @@ with sync_playwright() as playwright:
     expect(page.get_by_text("Partial coverage", exact=True)).to_be_visible()
     expect(page.get_by_text("Covered subtotal (AUD)", exact=True)).to_be_visible()
     expect(page.get_by_role("region", name="Change since previous review")).to_have_count(0)
-    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    desktop_width = page.evaluate("[document.documentElement.scrollWidth, window.innerWidth]")
+    assert desktop_width[0] <= desktop_width[1], desktop_width
     page.set_viewport_size({"width": 390, "height": 844})
-    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    mobile_width = page.evaluate("[document.documentElement.scrollWidth, window.innerWidth]")
+    assert mobile_width[0] <= mobile_width[1], mobile_width
     stranger = browser.new_page()
     stranger.goto(origin)
     stranger.get_by_role("button", name="Start sample workspace").click()
