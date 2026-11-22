@@ -10,3 +10,6 @@ build
 dist
 .env
 .streamlit/secrets.toml
+
+web/node_modules/
+web/dist/
