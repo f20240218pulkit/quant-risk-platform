@@ -24,16 +24,39 @@ def get_workspace(connection, token):
     """, digest=sha256(token.encode()).hexdigest()).scalar_one_or_none()
 
 
+def recently_authenticated(connection, token):
+    if not token or len(token) > 128:
+        return False
+    return bool(query(connection, """
+        SELECT authenticated_at >= now() - interval '15 minutes' FROM product_sessions
+        WHERE token_hash=:digest AND expires_at > now()
+    """, digest=sha256(token.encode()).hexdigest()).scalar_one_or_none())
+
+
 def close_session(connection, token):
     if token and len(token) <= 128:
         query(connection, "DELETE FROM product_sessions WHERE token_hash = :digest",
               digest=sha256(token.encode()).hexdigest())
 
 
-def open_session(connection):
-    workspace_id = str(uuid4())
+def open_session(connection, identity=None):
+    workspace_id = None
+    if identity:
+        issuer, subject = identity
+        query(connection, "SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))",
+              identity=json.dumps(identity))
+        workspace_id = query(connection, """
+            SELECT workspace_id FROM product_identities WHERE issuer=:issuer AND subject=:subject
+        """, issuer=issuer, subject=subject).scalar_one_or_none()
+    if workspace_id is None:
+        workspace_id = str(uuid4())
+        query(connection, "INSERT INTO product_workspaces (id) VALUES (:id)", id=workspace_id)
+        if identity:
+            query(connection, """
+                INSERT INTO product_identities (issuer, subject, workspace_id)
+                VALUES (:issuer, :subject, :workspace)
+            """, issuer=issuer, subject=subject, workspace=workspace_id)
     token = token_urlsafe(32)
-    query(connection, "INSERT INTO product_workspaces (id) VALUES (:id)", id=workspace_id)
     query(connection, """
         INSERT INTO product_sessions (token_hash, workspace_id, expires_at)
         VALUES (:digest, :workspace, now() + interval '8 hours')
@@ -41,8 +64,8 @@ def open_session(connection):
     return workspace_id, token
 
 
-def store_import(connection, workspace_id, snapshot_date, data):
-    positions, issues = parse_holdings(data)
+def store_import(connection, workspace_id, snapshot_date, data, identifiers):
+    positions, issues = parse_holdings(data, identifiers)
     digest = sha256(data).hexdigest()
     result = query(connection, """
         INSERT INTO product_imports (id, workspace_id, snapshot_date, input_hash, positions, issues)

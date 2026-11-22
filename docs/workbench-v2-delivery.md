@@ -88,4 +88,34 @@ Run the two processes in separate terminals. Set `WORKBENCH_TEST_DATABASE_URL` t
 
 ## Checkpoint boundaries
 
-This checkpoint has a disposable identity flow and PostgreSQL-backed sample workspaces. It uses one workspace-level history, two supported synthetic listings, and three explicit fixture dates. Reconciliation is performed by replacing the CSV and previewing it again. Production identity, portfolio and broker-source lifecycle, live scheduling, notifications, and NewsAlpha integration follow the release evidence above. The existing Streamlit capabilities remain independently testable.
+The initial checkpoint introduced a disposable identity flow and PostgreSQL-backed sample workspaces. It uses one workspace-level history, two supported synthetic listings, and three explicit fixture dates. Reconciliation is performed by replacing the CSV and previewing it again. The sections below describe the product after the integration of the follow-up workflows. The existing Streamlit capabilities remain independently testable.
+
+## Integrated product walkthrough
+
+1. Open the local app and start a sample workspace. Under **Monitor**, add an AAPL rule at 50.5%.
+2. Under **Review**, load and confirm the 13 November sample. It values the portfolio at A$3,000 and establishes the rule's initial state.
+3. Under **Monitor**, choose 20 November and queue a refresh. The report is A$3,040, with holdings still dated 13 November, and the weight crossing appears in the inbox. Mark it read or pause scheduled refresh from the same page.
+4. For the 20 November review, run a −10% scenario on Apple. The hypothetical portfolio value is A$2,886. Download the report evidence or return to the earlier report through history.
+5. Open **NewsAlpha** to see the eligible illustrative events. Run the comparison experiment with or without PPO and view or download the synthetic results.
+6. Confirm the 27 November sample to see a partial valuation. No full total, whole-portfolio weights, comparison or scenario is shown for that review.
+7. Open **Settings** to download the available workspace data or permanently delete the demonstration workspace.
+
+The automatic scheduler queues the newest available eligible report period for enabled workspaces. A manual refresh can be used to replay a specific sample date. Alerts are in-app only. Review publication and alert transition are atomic. Reclaimed jobs may repeat computation, but an expired lease cannot commit, even if the old process later recovers.
+
+## Private integration configuration
+
+Only the local synthetic mode is runnable with the default Compose configuration. The private service is fail-closed at startup. It requires HTTPS, a configured managed OIDC issuer with code flow and PKCE, invited subject IDs, configured database runtime and migration roles, and an operator-approved observation file. The same immutable file revision must be mounted in both API and worker. Replacing it requires a controlled restart of both services. Scope any usage, display, export and retention to written provider rights.
+
+| Variable | Purpose |
+|---|---|
+| `WORKBENCH_ORIGIN` | Bare HTTPS origin. Register its exact `/auth/callback` redirect with the identity provider. |
+| `WORKBENCH_OIDC_ISSUER`, `WORKBENCH_OIDC_CLIENT_ID`, `WORKBENCH_OIDC_CLIENT_SECRET` | Operator-managed identity configuration. Use real provider credentials from the deployment secret store. |
+| `WORKBENCH_OIDC_STATE_SECRET` | A securely generated state cookie signing secret, 32 characters or more. |
+| `WORKBENCH_OIDC_ALLOWED_SUBJECTS` | Space-separated verified subject IDs explicitly invited to the private environment. |
+| `WORKBENCH_APPROVED_MARKET_FILE` | An operator-managed local JSON file, not writable by users. See `ApprovedMarketFile` in `src/product/market.py`. |
+| `WORKBENCH_APPROVED_DATA` | Set to `1` only after confirming licensing for actual intended purposes. |
+| `WORKBENCH_DEMO_MODE` | Set to `1` for synthetic sample use. Leave unset for managed identity and approved observations. |
+
+Supply `source`, a unique `revision`, a listing map keyed by exchange and ticker, and a `periods` map keyed by report date. Each period contains a timezone-aware `cutoff`, native-currency prices keyed by listing, and optional AUD-per-USD rate. Every observation records `value`, `observed_at`, and `available_at`. Optional events have stable IDs, a listing key, an evidence URL and availability timestamp. Only include quotes, rates and events eligible by the cutoff. This adapter does not make external provider calls or infer market holidays or corporate actions. The operator must verify the session and split basis before publishing each period.
+
+Managed OIDC and the file adapter are integration boundaries, with no deployed identity tenant or licensed feed configured by this repository. External email, commercial broker sync, multi-account reconciliation, ETF look-through and transaction performance are separate work. The current UI supports one combined holdings snapshot per import, an in-app inbox and fixed synthetic strategy presets.

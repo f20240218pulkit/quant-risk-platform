@@ -4,33 +4,29 @@ import { RequestError, request } from "./api";
 import type { Comparison, Draft, Review, ReviewSummary, Sample, Session } from "./api";
 import "./styles.css";
 
-const wholeAmount = new Intl.NumberFormat("en-AU");
-const dateFormat = new Intl.DateTimeFormat("en-AU", { dateStyle: "medium", timeZone: "UTC" });
+import { day, money } from "./format";
+import { Monitoring, Research, Scenario, Settings } from "./workflows";
+
 const percent = new Intl.NumberFormat("en-AU", { style: "percent", maximumFractionDigits: 2 });
 const labels = { price: "Market prices", fx: "Currency movement", quantity: "Units held", cash: "Cash balances" };
-const money = (value: string, signed = false) => {
-  // The API emits fixed-point strings. Round cents without converting money
-  // through a binary floating-point value.
-  const negative = value.startsWith("-");
-  const [whole, fraction = ""] = (negative ? value.slice(1) : value).split(".");
-  const cents = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0").slice(0, 2));
-  const rounded = fraction.length > 2 && fraction[2] >= "5" ? cents + 1n : cents;
-  const sign = rounded === 0n ? "" : negative ? "-" : signed ? "+" : "";
-  return sign + "$" + wholeAmount.format(rounded / 100n) + "." + String(rounded % 100n).padStart(2, "0");
-};
-const day = (value: string) => dateFormat.format(new Date(value));
-
 function Report({ review, comparison }: { review: Review; comparison: Comparison | null }) {
+  const top = review.status === "complete" ? review.positions.filter(row => !row.instrument.startsWith("CASH:"))
+    .reduce<Review["positions"][number] | null>((largest, row) =>
+      !largest || Number(row.weight) > Number(largest.weight) ? row : largest, null) : null;
   return <article className="panel report">
     <div className="report-heading">
       <div><h2>Portfolio review</h2><p>{day(review.snapshot_date)} · {review.source}</p></div>
       <span className={review.status === "partial" ? "tag warning" : "tag"}>{review.status === "partial" ? "Partial coverage" : "Complete"}</span>
     </div>
+    {review.holdings_date &&
+      <p className="holdings-date">Holdings confirmed for {day(review.holdings_date)}.</p>}
     <div className="valuation">
       <p>{review.status === "partial" ? "Covered subtotal (AUD)" : "Portfolio value (AUD)"}</p>
       <strong>{money(review.aud_total ?? review.aud_covered_subtotal)}</strong>
     </div>
-    {review.status === "partial" && <p role="status" className="notice">A required close is missing. The subtotal excludes the uncovered position. Portfolio-wide weights and comparison are unavailable.</p>}
+    {top && <p className="concentration"><strong>Largest listed holding</strong> {top.label} · {percent.format(Number(top.weight))} of portfolio value</p>}
+    {review.status === "partial" && <p role="status" className="notice">Required pricing evidence is missing. The subtotal excludes the uncovered position. Portfolio-wide weights and comparison are unavailable.</p>}
+    {comparison && !comparison.eligible && <p className="notice warning">{comparison.reason}</p>}
     {comparison?.eligible && <section aria-label="Change since previous review" className="change">
       <div className="section-heading"><h3>Change since previous review</h3><strong>{money(comparison.aud_change, true)}</strong></div>
       <dl>{Object.entries(comparison.effects).map(([key, value]) =>
@@ -46,11 +42,12 @@ function Report({ review, comparison }: { review: Review; comparison: Comparison
         <tbody>{review.positions.map(row => <tr key={row.instrument}>
           <th scope="row">{row.label}<small>{row.instrument}</small></th><td>{row.quantity}</td>
           <td>{row.instrument.startsWith("CASH:") ? "Cash balance" : row.local_price ? row.currency + " " + row.local_price : "Missing close"}</td>
-          <td>{row.aud_fx}</td><td>{row.aud_value === null ? "Unavailable" : money(row.aud_value)}</td>
+          <td>{row.aud_fx ?? "Missing FX"}</td><td>{row.aud_value === null ? "Unavailable" : money(row.aud_value)}</td>
           <td>{row.weight === null ? "Unavailable" : percent.format(Number(row.weight))}</td>
         </tr>)}</tbody>
       </table></div>
-      <p className="method">Method {review.method}. FX is AUD per unit of the quoted currency.</p>
+      <p className="method">Method {review.method}. FX is AUD per unit of the quoted currency.
+        {review.cutoff && " Report cutoff " + new Date(review.cutoff).toLocaleString("en-AU", { timeZoneName: "short" }) + "."}</p>
     </details>
   </article>;
 }
@@ -68,6 +65,7 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [tab, setTab] = useState("Review");
 
   async function loadReview(id: string, history: ReviewSummary[]) {
     const loaded = await request<Review>("/reviews/" + id);
@@ -121,7 +119,10 @@ function App() {
 
   async function confirm() {
     if (!draft) return;
-    const job = await request<{ id: string }>("/imports/" + draft.id + "/confirm", { method: "POST" });
+    await watchJob(await request<{ id: string }>("/imports/" + draft.id + "/confirm", { method: "POST" }));
+  }
+
+  async function watchJob(job: { id: string }) {
     setMessage("Valuation queued.");
     for (let attempt = 0; attempt < 25; attempt++) {
       const status = await request<{ state: string; report_id: string | null }>("/jobs/" + job.id);
@@ -129,6 +130,7 @@ function App() {
       if (status.report_id) {
         await refresh(status.report_id);
         setDraft(null);
+        setTab("Review");
         setMessage("Review published.");
         return;
       }
@@ -137,14 +139,19 @@ function App() {
     setMessage("Valuation is still queued. Refresh report history to check again.");
   }
 
+  function clearWorkspace() {
+    setSession(null); setDraft(null); setReports([]); setReview(null); setComparison(null); setFile(null); setTab("Review");
+  }
+
+  const synthetic = sample?.mode === "synthetic";
   return <>
     <header><div className="topbar">
       <a className="brand" href="/">Portfolio Workbench</a>
-      <div className="header-actions"><span className="tag">Synthetic workspace</span>
+      <div className="header-actions"><span className="tag">{synthetic ? "Synthetic workspace" : "Portfolio review"}</span>
         {session && <button className="secondary" disabled={busy} onClick={() => void action(async () => {
           await request<void>("/session", { method: "DELETE" });
-          setSession(null); setDraft(null); setReports([]); setReview(null); setComparison(null); setFile(null);
-        })}>Close workspace</button>}
+          clearWorkspace();
+        })}>{synthetic ? "Close workspace" : "Sign out"}</button>}
       </div>
     </div></header>
     <main>
@@ -154,14 +161,25 @@ function App() {
       </div>
       {error && <p className="notice warning" role="alert">{error}</p>}
       {message && <p role="status" className="notice">{message}</p>}
-      {!session && <section className="panel welcome">
+      {!session && sample && (synthetic ? <section className="panel welcome">
         <h2>Try a sample portfolio</h2>
         <p>This workspace uses synthetic prices and fixtures. Use the sample CSV or create your own synthetic positions.</p>
         <button disabled={!ready || busy || !sample} onClick={() => void action(async () => {
           setSession(await request<Session>("/session", { method: "POST" }));
         })}>Start sample workspace</button>
-      </section>}
-      {session && <div className="workspace">
+      </section> : <section className="panel welcome flow">
+        <h2>Sign in to your workspace</h2><p>Access is managed for invited accounts.</p>
+        <a className="primary-link" href="/auth/login">Sign in</a>
+      </section>)}
+      {session && <nav className="product-nav" aria-label="Workspace views">
+        {["Review", "Monitor", "NewsAlpha", "Settings"].map(view => <button key={view} type="button"
+          className="secondary" aria-current={tab === view ? "page" : undefined} disabled={busy}
+          onClick={() => { setTab(view); setMessage(""); setError(""); }}>{view}</button>)}
+      </nav>}
+      {session && tab === "Monitor" && <Monitoring dates={sample?.dates ?? []} onPublish={job => action(() => watchJob(job))} />}
+      {session && tab === "NewsAlpha" && <Research key={review?.id ?? "no-review"} review={review} synthetic={synthetic} />}
+      {session && tab === "Settings" && <Settings synthetic={synthetic} onDelete={() => { clearWorkspace(); setMessage("Workspace deleted."); }} />}
+      {session && tab === "Review" && <div className="workspace">
         <aside>
           <section className="panel controls" aria-labelledby="import-title">
             <h2 id="import-title">Import holdings</h2>
@@ -169,8 +187,9 @@ function App() {
             <select id="snapshot-date" value={date} disabled={busy} onChange={event => {
               setDate(event.target.value); setDraft(null);
             }}>{sample?.dates.map(value => <option key={value} value={value}>{day(value)}</option>)}</select>
-            <button disabled={busy || !sample} onClick={() => sample && void action(() => upload(new Blob([sample.csv], { type: "text/csv" }), "sample.csv"))}>Load sample holdings</button>
-            <label htmlFor="upload">Or choose a synthetic CSV</label>
+            {sample?.csv && <button disabled={busy} onClick={() => sample.csv &&
+              void action(() => upload(new Blob([sample.csv!], { type: "text/csv" }), "sample.csv"))}>Load sample holdings</button>}
+            <label htmlFor="upload">{synthetic ? "Or choose a synthetic CSV" : "Choose a holdings CSV"}</label>
             <input id="upload" type="file" accept=".csv,text/csv" disabled={busy} onChange={event => {
               setFile(event.target.files?.[0] ?? null); setDraft(null);
             }} />
@@ -196,7 +215,7 @@ function App() {
             <dl>{draft.positions.map(row => <div key={row.instrument}><dt>{row.instrument}</dt><dd>{row.quantity}</dd></div>)}</dl>
             <button disabled={busy || draft.issues.length > 0} onClick={() => void action(confirm)}>Confirm and value holdings</button>
           </section>}
-          {review ? <Report review={review} comparison={comparison} /> : !draft && <section className="panel empty">
+          {review ? <><Report review={review} comparison={comparison} /><Scenario key={review.id} review={review} /></> : !draft && <section className="panel empty">
             <h2>Your first review</h2><p>Load sample holdings, then confirm the snapshot to see its AUD valuation and source figures.</p>
           </section>}
         </div>

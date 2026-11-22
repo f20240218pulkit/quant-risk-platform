@@ -61,3 +61,27 @@ ul.notice { padding-left: 1.8rem; }
 }
 
 .download { display: inline-block; margin-bottom: .5rem; color: #285840; font-size: .9rem; }
+.product-nav { display: flex; gap: .45rem; flex-wrap: wrap; margin-bottom: 1.15rem; }
+.product-nav button[aria-current] { background: #1b5239; color: white; }
+.dashboard-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; align-items: start; }
+.wide { grid-column: 1 / -1; }
+.flow { display: grid; gap: .85rem; min-width: 0; }
+.flow > button, .flow form > button, .primary-link { justify-self: start; }
+.fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; }
+.flow label:not(.checkbox) { display: grid; gap: .35rem; }
+.flow input:not([type="checkbox"]), .flow select { border: 1px solid #8fa399; border-radius: .4rem; min-width: 0; width: 100%; padding: .5rem; }
+.checkbox { display: flex; gap: .5rem; align-items: start; }
+.checkbox input { margin-top: .23rem; }
+.list-row { display: flex; gap: .65rem; align-items: center; justify-content: space-between; border-top: 1px solid #e5eae3; padding-top: .7rem; }
+.list-row p { font-size: .87rem; }
+.event { padding-top: .65rem; border-top: 1px solid #e5eae3; }
+.event small, .holdings-date { color: #505a51; }
+.event h3 { margin: .26rem 0; }
+.danger { color: #912a2a; background: white; border-color: #912a2a; }
+.danger:hover { background: #fff1f1; }
+.primary-link { background: #1b5239; color: white; text-decoration: none; border-radius: .45rem; padding: .7rem .85rem; }
+@media (max-width: 700px) { .dashboard-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 420px) { .fields { grid-template-columns: minmax(0, 1fr); } }
+
+.concentration { margin-bottom: 1rem; }
+.concentration strong { color: #284839; margin-right: .45rem; }

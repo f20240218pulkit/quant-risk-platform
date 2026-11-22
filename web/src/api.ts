@@ -16,7 +16,7 @@ export async function request<T>(path: string, options?: RequestInit): Promise<T
   return (response.status === 204 ? undefined : await response.json()) as T;
 }
 
-export type Sample = { csv: string; dates: string[] };
+export type Sample = { csv: string | null; dates: string[]; mode: "synthetic" | "private" };
 export type Session = { workspace_id: string };
 export type Draft = {
   id: string;
@@ -31,13 +31,15 @@ export type Evidence = {
   currency: string;
   quantity: string;
   local_price: string | null;
-  aud_fx: string;
+  aud_fx: string | null;
   aud_value: string | null;
   weight: string | null;
   issue: string | null;
 };
 export type Review = ReviewSummary & {
   method: string;
+  holdings_date?: string;
+  cutoff?: string | null;
   source: string;
   aud_total: string | null;
   aud_covered_subtotal: string;
