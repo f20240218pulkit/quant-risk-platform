@@ -1,0 +1,53 @@
+x-product-image: &product-image
+  image: portfolio-workbench-local
+  build:
+    context: ..
+    dockerfile: deployment/workbench.Dockerfile
+
+x-runtime: &runtime
+  WORKBENCH_DATABASE_URL: postgresql+psycopg://workbench_runtime:workbench-local-runtime@database/workbench
+  WORKBENCH_DEMO_MODE: "1"
+
+services:
+  database:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: workbench
+      POSTGRES_USER: workbench_admin
+      POSTGRES_PASSWORD: workbench-local-admin
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U workbench_admin -d workbench"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+    volumes:
+      - workbench-db:/var/lib/postgresql/data
+      - ./workbench-init.sql:/docker-entrypoint-initdb.d/10-workbench.sql:ro
+  migrate:
+    <<: *product-image
+    environment:
+      WORKBENCH_DATABASE_URL: postgresql+psycopg://workbench_admin:workbench-local-admin@database/workbench
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    depends_on:
+      database:
+        condition: service_healthy
+  web:
+    <<: *product-image
+    environment:
+      <<: *runtime
+      WORKBENCH_ORIGIN: http://127.0.0.1:8001
+    ports:
+      - "127.0.0.1:8001:8001"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+  worker:
+    <<: *product-image
+    environment: *runtime
+    command: ["python", "-m", "src.product.worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  workbench-db:
